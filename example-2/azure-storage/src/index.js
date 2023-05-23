@@ -1,5 +1,9 @@
 const express = require("express");
-const azure = require('azure-storage');
+const {
+  BlobServiceClient,
+  StorageSharedKeyCredential,
+  newPipeline,
+} = require("@azure/storage-blob");
 
 const app = express();
 
@@ -8,15 +12,21 @@ const app = express();
 //
 
 if (!process.env.PORT) {
-    throw new Error("Please specify the port number for the HTTP server with the environment variable PORT.");
+  throw new Error(
+    "Please specify the port number for the HTTP server with the environment variable PORT."
+  );
 }
 
 if (!process.env.STORAGE_ACCOUNT_NAME) {
-    throw new Error("Please specify the name of an Azure storage account in environment variable STORAGE_ACCOUNT_NAME.");
+  throw new Error(
+    "Please specify the name of an Azure storage account in environment variable STORAGE_ACCOUNT_NAME."
+  );
 }
 
 if (!process.env.STORAGE_ACCESS_KEY) {
-    throw new Error("Please specify the access key to an Azure storage account in environment variable STORAGE_ACCESS_KEY.");
+  throw new Error(
+    "Please specify the access key to an Azure storage account in environment variable STORAGE_ACCESS_KEY."
+  );
 }
 
 //
@@ -24,65 +34,53 @@ if (!process.env.STORAGE_ACCESS_KEY) {
 //
 
 const PORT = process.env.PORT;
-const STORAGE_ACCOUNT_NAME = process.env.STORAGE_ACCOUNT_NAME;
-const STORAGE_ACCESS_KEY = process.env.STORAGE_ACCESS_KEY;
+const sharedKeyCredential = new StorageSharedKeyCredential(
+  process.env.AZURE_STORAGE_ACCOUNT_NAME,
+  process.env.AZURE_STORAGE_ACCOUNT_ACCESS_KEY
+);
 
-console.log(`Serving videos from Azure storage account ${STORAGE_ACCOUNT_NAME}.`);
+const pipeline = newPipeline(sharedKeyCredential);
 
-//
-// Create the Blob service API to communicate with Azure storage.
-//
-function createBlobService() {
-    const blobService = azure.createBlobService(STORAGE_ACCOUNT_NAME, STORAGE_ACCESS_KEY);
-    // Uncomment next line for extra debug logging.
-    //blobService.logger.level = azure.Logger.LogLevels.DEBUG; 
-    return blobService;
-}
+const blobServiceClient = new BlobServiceClient(
+  `https://${process.env.AZURE_STORAGE_ACCOUNT_NAME}.blob.core.windows.net`,
+  pipeline
+);
+
+const getBlobName = (originalName) => {
+  // Use a random number to generate a unique file name,
+  //  removing "0." from the start of the string.
+  const identifier = Math.random().toString().replace(/0\./, "");
+  return `${identifier}-${originalName}`;
+};
 
 //
 // Registers a HTTP GET route to retrieve videos from storage.
 //
-app.get("/video", (req, res) => {
+app.get("/video/:filename", async (req, res) => {
+  let viewData;
 
-    const videoPath = req.query.path;
-    console.log(`Streaming video from path ${videoPath}.`);
-    
-    const blobService = createBlobService();
+  try {
+    const blobName = req.params.filename;
+    const containerClient = blobServiceClient.getContainerClient("videos");
+    res.setHeader("Content-Disposition", "inline");
+    res.setHeader("Content-Type", "video/mp4");
+    const blobClient = await containerClient.getBlobClient(blobName);
 
-    const containerName = "videos";
-    blobService.getBlobProperties(containerName, videoPath, (err, properties) => { // Sends a HTTP HEAD request to retreive video size.
-        if (err) {
-            console.error(`Error occurred getting properties for video ${containerName}/${videoPath}.`);
-            console.error(err && err.stack || err);
-            res.sendStatus(500);
-            return;
-        }
-
-        //
-        // Writes HTTP headers to the response.
-        //
-        res.writeHead(200, {
-            "Content-Length": properties.contentLength,
-            "Content-Type": "video/mp4",
-        });
-
-        //
-        // Streams the video from Azure storage to the response.
-        //
-        blobService.getBlobToStream(containerName, videoPath, res, err => {
-            if (err) {
-                console.error(`Error occurred getting video ${containerName}/${videoPath} to stream.`);
-                console.error(err && err.stack || err);
-                res.sendStatus(500);
-                return;
-            }
-        });
-    });
+    const downloadResponse = await blobClient.download();
+    downloadResponse.readableStreamBody.pipe(res);
+  } catch (err) {
+    viewData = {
+      title: "Error",
+      viewName: "error",
+      message: "There was an error contacting the blob storage container.",
+      error: err,
+    };
+    res.status(500);
+  }
 });
-
 //
 // Starts the HTTP server.
 //
 app.listen(PORT, () => {
-    console.log(`Microservice online`);
+  console.log(`Microservice online`);
 });
